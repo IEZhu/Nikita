@@ -7,7 +7,8 @@ import  operator
 import  requests
 import  json
 import  hashlib
-from    dotenv              import load_dotenv 
+import  traceback
+from    dotenv              import load_dotenv
 load_dotenv() 
 # ======================================================================================================================
 from    src.tools           import  tools                   as  t
@@ -230,7 +231,8 @@ class parser(threading.Thread):
     # ------------------------------------------------------------------------------------------------------------------
     # добавление в parser.json_data данных из разобранной записи
     # ------------------------------------------------------------------------------------------------------------------
-    def add_to_json_data(self, fj_rec, fj_dt_sort_add, fj_id, fj_pos, fj_size, fj_base):                                # первый параметр - распарсенные поля записи ЖР
+    def add_to_json_data(self, fj_rec, fj_dt_sort_add, fj_id, fj_pos, fj_size, fj_base, fj_retry=False):                # первый параметр - распарсенные поля записи ЖР
+        cc                                                  =   0                                                       # маркер прогресса по полям: пишется в лог при исключении
         try:
             if(g.debug.on_parser):
                 t.debug_print("adding to json "+str(fj_rec),self.name)
@@ -319,8 +321,19 @@ class parser(threading.Thread):
             self.json_data[self.name].append(local_json)
             if(g.debug.on_parser):
                 t.debug_print(json.dumps(local_json, indent=2), self.name)
+        except KeyError as e:
+            if not fj_retry:                                                                                            # 1С дописывает новые коды (пользователь/компьютер/событие/...) в словарь ЖР на ходу;
+                t.debug_print(f"KeyError while add_to_json {str(e)} (cc={cc}): "                                        # снапшот словаря в памяти отстал от файла - перечитываем и повторяем один раз
+                              f"перечитываю словарь {fj_base} и повторяю запись", self.name)
+                d.read_ib_dictionary(fj_base)
+                return self.add_to_json_data(fj_rec, fj_dt_sort_add, fj_id, fj_pos, fj_size, fj_base, fj_retry=True)
+            t.debug_print(f"Exception while add_to_json {str(e)} (cc={cc}, rec={str(fj_rec)})\n"                        # ключа нет даже в свежем словаре - это уже не гонка, а битые данные
+                          + traceback.format_exc(), self.name)
+            t.graceful_shutdown(111)
+            return False
         except Exception as e:
-            t.debug_print(f"Exception while add_to_json {str(e)}", self.name)
+            t.debug_print(f"Exception while add_to_json {str(e)} (cc={cc}, rec={str(fj_rec)})\n"
+                          + traceback.format_exc(), self.name)
             t.graceful_shutdown(111)
             return False
         return True
@@ -520,6 +533,8 @@ class parser(threading.Thread):
                 t.debug_print(pf_base+":processing " + pf_base + "@" + pf_name, self.name)
             # разбираем файл, при необходимости~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
             while int(file_state['filesizeread'])           <   int(file_state['filesize']):                            # пока количеством не дошёл до конца
+                if os.path.exists(pf_name):                                                                             # guard: при сокращении ЖР 1С может пересоздать файл; без файла read_ib_dictionary уронит службу через graceful_shutdown(3), а ниже цикл и так мягко выйдет по "no rows was returned"
+                    d.read_ib_dictionary(pf_base)                                                                       # перечитываем словарь перед каждым блоком, как в LGP-ветке: 1С дописывает новые коды в 1Cv8.lgd на ходу, со старым снапшотом свежая запись даёт KeyError
                 plf_rowID                                   =   file_state['filesizeread'] + min_row - 1                # у нас же смещение может быть в обрезанных файлах!!!
                 limit_delta                                 =   int(file_state['filesize'])\
                                                             -   int(file_state['filesizeread'])                         # https://github.com/WonderMr/Journal2Ct/issues/40
