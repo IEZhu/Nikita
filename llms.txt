@@ -1,0 +1,23 @@
+# Nikita
+
+> Service that parses 1C:Enterprise event logs (.lgf/.lgp and .lgd) and exports them to ClickHouse, with optional Solr and Redis; runs as a Windows service or a Linux systemd daemon.
+
+Nikita is written in Python (CherryPy, clickhouse-driver). It auto-discovers infobases in 1C server clusters, parses the registration log of each, keeps read positions in SQLite so it resumes after restarts, and sends events in batches to ClickHouse. A built-in web panel shows progress and errors, `/stats_api` returns JSON statistics, and an optional `POST /mcp` endpoint lets AI clients run read-only SQL against ClickHouse. Windows builds use PyInstaller and an NSIS installer. Documentation is in Russian. Licence: GPLv3.
+
+## Docs
+
+- [README](https://github.com/IEZhu/Nikita/blob/master/README.md): overview and quick start for Linux and Windows
+- [AGENTS.md](https://github.com/IEZhu/Nikita/blob/master/AGENTS.md): layout, commands, code style and gotchas for coding agents
+- [docs/admin/installation.md](https://github.com/IEZhu/Nikita/blob/master/docs/admin/installation.md): installation on Linux and Windows
+- [docs/admin/configuration.md](https://github.com/IEZhu/Nikita/blob/master/docs/admin/configuration.md): all `.env` settings, including MCP
+- [docs/admin/monitoring.md](https://github.com/IEZhu/Nikita/blob/master/docs/admin/monitoring.md): web panel and JSON API
+- [docs/dev/architecture.md](https://github.com/IEZhu/Nikita/blob/master/docs/dev/architecture.md): components and data flow
+- [docs/dev/log-formats.md](https://github.com/IEZhu/Nikita/blob/master/docs/dev/log-formats.md): 1C event log formats
+- [docs/dev/clickhouse-schema.md](https://github.com/IEZhu/Nikita/blob/master/docs/dev/clickhouse-schema.md): ClickHouse table schema
+
+## Optional
+
+- [docs/dev/code-style.md](https://github.com/IEZhu/Nikita/blob/master/docs/dev/code-style.md): project code style (aligned assignments)
+- [docs/admin/troubleshooting.md](https://github.com/IEZhu/Nikita/blob/master/docs/admin/troubleshooting.md): common problems
+- [BUILD.md](https://github.com/IEZhu/Nikita/blob/master/BUILD.md): Windows distribution and installer build
+- [CHANGELOG.md](https://github.com/IEZhu/Nikita/blob/master/CHANGELOG.md): change history

@@ -1,5 +1,12 @@
 # Nikita
 
+**English summary.** Nikita is a service for 1C:Enterprise administrators that parses 1C event
+logs (the registration log, `.lgf`/`.lgp` text and `.lgd` SQLite formats) and exports them to
+ClickHouse for SQL analytics, with optional Solr full-text search and Redis buffering. It runs as a
+Windows service or a Linux systemd daemon, auto-discovers infobases in 1C server clusters, resumes
+from saved read positions, and offers a web monitoring panel, a JSON API and an optional MCP
+endpoint for read-only ClickHouse queries. Python 3.10+, GPLv3. The documentation below is in Russian.
+
 **Высокопроизводительный сервис парсинга и экспорта журналов регистрации 1С:Предприятие в ClickHouse, Solr и Redis.**
 
 Работает как служба Windows или демон Linux (systemd). Автоматически обнаруживает базы, парсит логи (`.lgf`/`.lgd`) и отправляет данные в хранилища.
