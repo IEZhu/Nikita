@@ -29,7 +29,8 @@ env_path                                                =   os.path.join(project
 load_dotenv(env_path)
 
 is_windows                                              =   platform.system() == "Windows"      # Определение платформы
-ibases_lock                                             =   threading.Lock()                    # Глобальная блокировка для безопасного доступа к g.parser.ibases
+ibases_lock                                             =   threading.RLock()                   # Глобальная блокировка для безопасного доступа к g.parser.ibases
+                                                                                                # RLock: IB monitor держит её и вызывает conf.detect2, который берёт её снова
 
 # Функция для вывода конфигурации (вызывается после инициализации tools)
 def print_config():
