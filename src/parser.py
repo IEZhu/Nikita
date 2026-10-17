@@ -419,6 +419,7 @@ class parser(threading.Thread):
             if not self.solr_post_json_data(pf_base):
                 del self.json_data[self.name][:]                                                                        # блок перечитается с закоммиченного смещения; остаток не должен уйти с пачкой другого файла или базы
                 self.drop_clickhouse()
+                self.wait_or_stop(g.waits.clickhouse_reconnect)                                                         # пауза и тогда, когда ClickHouse жив, а отправка не прошла (Solr, ошибка INSERT)
                 return False
 
         if not state_manager.log_committed_block(
@@ -674,7 +675,7 @@ class parser(threading.Thread):
         block_commit_start                                  =   time.time()
         try:                                                                                                            # всё в попытке
             # чтение остатка содержимого файла в байтах ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-            while file_state['filesizeread']                <   pf_size:                                                # пока смещением не дошёл до конца
+            while file_state['filesizeread']                <   pf_size and not self.stopMe:                            # пока смещением не дошёл до конца и парсер не останавливают
                 t.debug_print(
                     f"file={pf_name} base={pf_base} read={str(file_state['filesizeread'])}",
                     self.name
@@ -881,6 +882,7 @@ class parser(threading.Thread):
                             t.debug_print("Block too large. Current size is " + str(g.parser.blocksize * pf_block_mul))
                 else:
                     t.debug_print(pf_base+":got empty chunk on file "+pf_name+" with pos="+str(file_state['filesizeread']))
+                    return                                                                                              # файл исчез или урезан после os.stat: state стоит на последнем коммите, файл перечитается при следующем обходе
         except Exception as e:
             t.debug_print(pf_base+":Exception # parse_file got error " + str(e),self.name)
     # ------------------------------------------------------------------------------------------------------------------

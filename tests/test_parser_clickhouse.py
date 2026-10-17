@@ -4,6 +4,7 @@
 """
 import os
 import sys
+import tempfile
 import threading
 import unittest
 from unittest.mock import MagicMock, call, patch
@@ -42,8 +43,10 @@ class TestParserWithoutClickhouse(unittest.TestCase):
         with patch.object(P.state_manager, "is_block_committed", return_value=False), \
              patch.object(P.state_manager, "log_committed_block") as log_block, \
              patch.object(P.state_manager, "update_file_state") as update_state, \
-             patch.object(self.parser, "solr_post_json_data", return_value=False):
+             patch.object(self.parser, "solr_post_json_data", return_value=False), \
+             patch.object(self.parser, "wait_or_stop") as wait:
             ok = self.parser.commit_json_data("f.lgp", "BASE", file_state, 0, [{"id": "a"}])
+        wait.assert_called_once_with(g.waits.clickhouse_reconnect)            # пауза и тогда, когда ClickHouse жив, а отправка всё равно не прошла
         self.assertFalse(ok)
         self.assertEqual(self.parser.json_data[name], [])                    # иначе остаток уйдёт с пачкой следующего файла, возможно другой базы
         log_block.assert_not_called()
@@ -122,7 +125,8 @@ class TestParserWithoutClickhouse(unittest.TestCase):
         self.parser.json_data[self.parser.name] = [{"id": "a"}]
         file_state = {"filename": "f.lgp", "filesize": 10, "filesizeread": 10}
         with patch.object(P.state_manager, "is_block_committed", return_value=False), \
-             patch.object(self.parser, "solr_post_json_data", return_value=False):
+             patch.object(self.parser, "solr_post_json_data", return_value=False), \
+             patch.object(self.parser, "wait_or_stop"):
             self.parser.commit_json_data("f.lgp", "BASE", file_state, 0, [{"id": "a"}])
         client.disconnect.assert_called_once_with()
         self.assertIsNone(self.parser.chclient)                                  # следующий parse_file пройдёт через ensure_clickhouse и его паузу
@@ -137,6 +141,44 @@ class TestParserWithoutClickhouse(unittest.TestCase):
         self.assertTrue(any("CREATE DATABASE IF NOT EXISTS " + g.conf.clickhouse.database in q for q in queries))
         server.disconnect.assert_called_once_with()
         self.assertIs(self.parser.chclient, database)
+
+
+class TestLgpLoop(unittest.TestCase):
+    """Цикл parse_lgp_file не должен крутиться вечно на пустом блоке и должен слушать остановку."""
+
+    def setUp(self):
+        self.addCleanup(setattr, g.debug, "on", g.debug.on)
+        g.debug.on = False
+        self.parser = _make_parser_instance()
+        handle, self.path = tempfile.mkstemp(suffix=".lgp")
+        os.write(handle, b"x" * 100)
+        os.close(handle)
+        self.addCleanup(os.remove, self.path)
+        self.reads = 0
+
+    def _read_block(self, name, offset, size):
+        self.reads += 1
+        if self.reads > 5:
+            raise RuntimeError("parse_lgp_file keeps reading an empty block")    # страховка теста от вечного цикла
+        return b""
+
+    def _parse(self):
+        with patch.object(P.state_manager, "get_file_state", return_value=None), \
+             patch.object(P.state_manager, "update_file_state") as update_state, \
+             patch.object(P.d, "read_ib_dictionary"), \
+             patch.object(self.parser, "read_block", side_effect=self._read_block):
+            self.parser.parse_lgp_file(self.path, "BASE")
+        return update_state
+
+    def test_returns_when_the_file_gives_an_empty_block(self):
+        update_state = self._parse()
+        self.assertEqual(self.reads, 1)                                          # файл исчез или урезан после os.stat: выходим, state не трогаем
+        update_state.assert_not_called()
+
+    def test_stops_reading_when_the_parser_stops(self):
+        self.parser.stopMe = True
+        self._parse()
+        self.assertEqual(self.reads, 0)
 
 
 if __name__ == '__main__':
