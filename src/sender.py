@@ -145,6 +145,21 @@ def get_existing_clickhouse_keys(chclient: Any, rows: List[tuple], base_name: st
     return existing
 
 # ----------------------------------------------------------------------------------------------------------------------
+# Учёт ошибки ClickHouse в статистике панели; та же ошибка подряд не вытесняет другие из last_errors
+# ----------------------------------------------------------------------------------------------------------------------
+def note_clickhouse_error(error_msg: str) -> None:
+    now                                                     =   datetime.datetime.now()
+    g.stats.clickhouse_total_errors                         +=  1
+    g.stats.clickhouse_last_error_time                      =   now
+    g.stats.clickhouse_last_error_msg                       =   error_msg
+    g.stats.clickhouse_connection_ok                        =   False
+    if g.stats.last_errors and g.stats.last_errors[-1][1:] == ("ClickHouse", error_msg):
+        return
+    g.stats.last_errors.append((now, "ClickHouse", error_msg))
+    if len(g.stats.last_errors)                             >   10:
+        g.stats.last_errors.pop(0)
+
+# ----------------------------------------------------------------------------------------------------------------------
 # Подключение к ClickHouse, проверенное SELECT 1; None, если сервер недоступен
 # ----------------------------------------------------------------------------------------------------------------------
 def connect_clickhouse(logger_name: str, database: Optional[str] = None) -> Any:
@@ -161,7 +176,7 @@ def connect_clickhouse(logger_name: str, database: Optional[str] = None) -> Any:
         client.execute('SELECT 1')
     except Exception as e:
         t.debug_print(f"✗ ClickHouse: Ошибка подключения: {str(e)}", logger_name)
-        g.stats.clickhouse_connection_ok                    =   False
+        note_clickhouse_error(f"Подключение: {str(e)}")
         return None
     t.debug_print(f"✓ ClickHouse: Подключение успешно установлено", logger_name)
     return client

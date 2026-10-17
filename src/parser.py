@@ -96,8 +96,29 @@ class parser(threading.Thread):
     def ensure_clickhouse(self):
         if not g.conf.clickhouse.enabled or self.chclient:
             return True
+        if self.stopMe:                                                                                                 # парсер останавливается: не тратим время на подключение
+            return False
         self.connect_clickhouse()
         return self.chclient is not None
+    # ------------------------------------------------------------------------------------------------------------------
+    # сброс подключения после сбоя отправки: следующий файл пройдёт через ensure_clickhouse и его паузу
+    # ------------------------------------------------------------------------------------------------------------------
+    def drop_clickhouse(self):
+        if not g.conf.clickhouse.enabled or self.chclient is None:
+            return
+        try:
+            self.chclient.disconnect()
+        except Exception as e:
+            t.debug_print(f"ClickHouse: ошибка при отключении: {str(e)}", self.name)
+        self.chclient                                       =   None
+    # ------------------------------------------------------------------------------------------------------------------
+    # пауза короткими шагами: остановка парсера не ждёт её конца
+    # ------------------------------------------------------------------------------------------------------------------
+    def wait_or_stop(self, seconds):
+        waited                                              =   0.0
+        while waited < seconds and not self.stopMe:
+            time.sleep(g.waits.stop_check)
+            waited                                          +=  g.waits.stop_check
     # ------------------------------------------------------------------------------------------------------------------
     # Запуск и работа класса
     # ------------------------------------------------------------------------------------------------------------------
@@ -397,6 +418,7 @@ class parser(threading.Thread):
         elif records_to_log:
             if not self.solr_post_json_data(pf_base):
                 del self.json_data[self.name][:]                                                                        # блок перечитается с закоммиченного смещения; остаток не должен уйти с пачкой другого файла или базы
+                self.drop_clickhouse()
                 return False
 
         if not state_manager.log_committed_block(
@@ -433,8 +455,9 @@ class parser(threading.Thread):
         try:
             if not self.ensure_clickhouse():                                                                            # без ClickHouse пачку некуда отправить: не разбираем, state не двигаем
                 t.debug_print(f"ClickHouse недоступен, {pf_base} разберём позже", self.name)
-                time.sleep(g.waits.clickhouse_reconnect)
+                self.wait_or_stop(g.waits.clickhouse_reconnect)
                 return
+            del self.json_data[self.name][:]                                                                            # остаток файла, упавшего посреди разбора, не подтверждён: перечитается с его закоммиченного смещения
             if g.conf.clickhouse.enabled and self.chclient:
                  # Создаем таблицу для базы с оптимальным сжатием и индексацией
                  try:
@@ -857,7 +880,7 @@ class parser(threading.Thread):
                             pf_block_mul                    *=  2                                                       # разобрать блок на записи ЖР не получилось, увеличиваю мультипликатор
                             t.debug_print("Block too large. Current size is " + str(g.parser.blocksize * pf_block_mul))
                 else:
-                    t.debug_print(pf_base+":got empty chunk on file "+pf_name+" with pos="+file_state['filesizeread'])
+                    t.debug_print(pf_base+":got empty chunk on file "+pf_name+" with pos="+str(file_state['filesizeread']))
         except Exception as e:
             t.debug_print(pf_base+":Exception # parse_file got error " + str(e),self.name)
     # ------------------------------------------------------------------------------------------------------------------
