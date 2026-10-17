@@ -64,7 +64,7 @@ class service:
     display_name                                                =   "Nikita - быстрый поиск по журналам регистрации 1С"
     description                                                 =   "Обеспечивает индексацию и быстрый поиск по " \
                                                                     "журналам регистрации"
-    build_version                                               =   "2026.06.22-solr-named-fields"                      # ручной тег версии сборки; бампать при изменениях кода
+    build_version                                               =   "2026.10.17-mcp"                                    # ручной тег версии сборки; бампать при изменениях кода
 # ======================================================================================================================
 # переменные времени исполнения программы или потоков
 # ======================================================================================================================
@@ -126,6 +126,17 @@ class conf:
         user                                                    =   os.getenv('CLICKHOUSE_USER', 'default')
         password                                                =   os.getenv('CLICKHOUSE_PASSWORD', '')
         database                                                =   os.getenv('CLICKHOUSE_DATABASE', 'zhr1c')
+
+    # ======= настройки MCP (эндпоинт /mcp веб-сервера) ================================================================
+    # авторизации в Nikita нет: публикуйте /mcp только за аутентифицирующим прокси и с HTTP_LISTEN_INTERFACE=127.0.0.1
+    class mcp:
+        section_name                                            =   "MCP settings"
+        clickhouse_user                                         =   os.getenv('MCP_CLICKHOUSE_USER', '')                # отдельный пользователь readonly, без отката на CLICKHOUSE_USER
+        clickhouse_password                                     =   os.getenv('MCP_CLICKHOUSE_PASSWORD', '')
+        enabled                                                 =   os.getenv('MCP_ENABLED', 'False').lower() in ('true', '1', 't', 'y', 'yes') and clickhouse_user != ''
+        max_rows                                                =   max(1, int(os.getenv('MCP_MAX_ROWS', 10000)))       # потолок max_rows инструмента query
+        allowed_origins                                         =   [origin.strip() for origin in os.getenv('MCP_ALLOWED_ORIGINS', '').split(',') if origin.strip()]
+        max_body                                                =   65536                                               # байт в теле одного запроса
 
     # ======= настройки Redis ==========================================================================================
     class redis:

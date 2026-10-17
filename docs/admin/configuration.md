@@ -10,6 +10,7 @@
 - [Настройка баз данных 1С](#настройка-баз-данных-1с)
 - [Настройка хранилищ данных](#настройка-хранилищ-данных)
 - [Настройка веб-сервера](#настройка-веб-сервера)
+- [MCP-эндпоинт](#mcp-эндпоинт)
 - [Настройка парсера](#настройка-парсера)
 - [Отладка](#отладка)
 - [Примеры конфигураций](#примеры-конфигураций)
@@ -220,6 +221,81 @@ HTTP_LISTEN_PORT=8984
 - По умолчанию HTTP-сервер доступен со всех интерфейсов (`0.0.0.0`)
 - Для доступа только с локального компьютера: `HTTP_LISTEN_INTERFACE=127.0.0.1`
 - Для защиты в продакшн рекомендуется использовать reverse proxy (nginx, Apache)
+
+---
+
+## MCP-эндпоинт
+
+`POST /mcp` — сервер [Model Context Protocol](https://modelcontextprotocol.io/) внутри Nikita с одним
+инструментом `query`: произвольный читающий SQL к ClickHouse. Nikita сам отправляет запрос, читает результат
+потоком (не больше `max_rows` строк) и возвращает колонки и строки. Поддерживаются ревизии протокола
+`2026-07-28` и `2025-03-26`…`2025-11-25`; на каждый запрос с `id` — один JSON-ответ (без SSE и без сессий),
+нотификации получают `202` без тела. По умолчанию `query` возвращает 200 строк, не больше `MCP_MAX_ROWS`.
+
+```ini
+MCP_ENABLED=true
+# отдельный пользователь ClickHouse только на чтение; без него MCP не включается
+MCP_CLICKHOUSE_USER=nikita_mcp
+MCP_CLICKHOUSE_PASSWORD=секрет
+# потолок max_rows инструмента query
+MCP_MAX_ROWS=10000
+# разрешённые заголовки Origin через запятую; запрос с другим Origin получает 403
+MCP_ALLOWED_ORIGINS=
+```
+
+**Безопасность — обязательно:**
+- В Nikita нет авторизации. Публикуйте `/mcp` только за reverse proxy с аутентификацией и TLS,
+  а Nikita слушайте на `HTTP_LISTEN_INTERFACE=127.0.0.1`.
+- Запрет записи обеспечивает ClickHouse, а не Nikita: пользователь `MCP_CLICKHOUSE_USER` должен
+  иметь `readonly=1` и `SELECT` только на базу журнала (`zhr1c` — значение `CLICKHOUSE_DATABASE` по умолчанию,
+  подставьте своё).
+- Ограничивайте размер тела запроса на прокси (`LimitRequestBody 65536` в примере ниже): лимит Nikita
+  в 64 KiB работает только для `application/json`, тела других типов CherryPy разбирает раньше.
+- Нефинитные числа из ClickHouse (`nan`, `inf`) возвращаются как `null` — в JSON их нет.
+
+Пример пользователя ClickHouse:
+
+```xml
+<clickhouse>
+    <profiles>
+        <nikita_mcp>
+            <readonly>1</readonly>
+            <max_execution_time>60</max_execution_time>
+            <max_result_rows>100000</max_result_rows>
+            <result_overflow_mode>break</result_overflow_mode>
+        </nikita_mcp>
+    </profiles>
+    <users>
+        <nikita_mcp>
+            <password_sha256_hex>...</password_sha256_hex>
+            <networks><ip>10.0.0.10/32</ip></networks>
+            <profile>nikita_mcp</profile>
+            <grants><query>GRANT SELECT ON zhr1c.*</query></grants>
+        </nikita_mcp>
+    </users>
+</clickhouse>
+```
+
+**Пример Apache (Basic auth):**
+
+```apache
+<Location /nikita/mcp>
+    AuthType Basic
+    AuthName "Nikita MCP"
+    AuthBasicProvider file
+    AuthUserFile /etc/apache2/nikita.htpasswd
+    Require valid-user
+    LimitRequestBody 65536
+    ProxyPass http://127.0.0.1:8984/mcp timeout=120
+</Location>
+```
+
+**Подключение из Claude Code:**
+
+```bash
+claude mcp add --transport http nikita https://host.example/nikita/mcp \
+  --header "Authorization: Basic $(printf '%s' "$NIKITA_MCP_USER:$NIKITA_MCP_PASSWORD" | base64 | tr -d '\n')"
+```
 
 ---
 
@@ -442,6 +518,16 @@ PARSER_THREADS=1
 |----------|-----|--------------|----------|
 | `HTTP_LISTEN_INTERFACE` | string | `0.0.0.0` | Интерфейс для прослушивания (0.0.0.0 = все) |
 | `HTTP_LISTEN_PORT` | integer | `8984` | Порт веб-сервера |
+
+### MCP
+
+| Параметр | Тип | По умолчанию | Описание |
+|----------|-----|--------------|----------|
+| `MCP_ENABLED` | boolean | `false` | Включает эндпоинт `/mcp` (нужен и `MCP_CLICKHOUSE_USER`) |
+| `MCP_CLICKHOUSE_USER` | string | — | Пользователь ClickHouse для запросов MCP, только `readonly=1` |
+| `MCP_CLICKHOUSE_PASSWORD` | string | — | Его пароль |
+| `MCP_MAX_ROWS` | integer | `10000` | Потолок `max_rows` инструмента `query` |
+| `MCP_ALLOWED_ORIGINS` | string | — | Разрешённые `Origin` через запятую |
 
 ### Парсер
 
