@@ -49,62 +49,55 @@ class parser(threading.Thread):
 
         self.stopMe                                         =   False
         
+        if g.conf.clickhouse.enabled and ch is None:
+            t.debug_print("ClickHouse драйвер (clickhouse_driver) не доступен. ClickHouse будет выключен.", self.name)
+            g.conf.clickhouse.enabled                       =   False
+            # продолжаем работу парсера (например, Solr/Redis могут быть включены в другом окружении)
         if g.conf.clickhouse.enabled:
-            try:
-                if ch is None:
-                    t.debug_print("ClickHouse драйвер (clickhouse_driver) не доступен. ClickHouse будет выключен.", self.name)
-                    self.chclient                           =   None
-                    g.conf.clickhouse.enabled               =   False
-                    # продолжаем работу парсера (например, Solr/Redis могут быть включены в другом окружении)
-                t.debug_print(f"Подключение к ClickHouse: {g.conf.clickhouse.host}:{g.conf.clickhouse.port}, БД: {g.conf.clickhouse.database}", self.name)
-                
-                # Подключаемся без указания базы данных для её создания
-                self.chclient                               =   ch(
-                                                                    host=g.conf.clickhouse.host, 
-                                                                    port=g.conf.clickhouse.port, 
-                                                                    user=g.conf.clickhouse.user, 
-                                                                    password=g.conf.clickhouse.password
-                                                                )
-                self.chclient.execute('SELECT 1')
-                t.debug_print(f"✓ ClickHouse: Подключение успешно установлено", self.name)
-                
-                # Проверяем и создаём базу данных с максимальным сжатием
-                try:
-                    databases                               =   self.chclient.execute("SHOW DATABASES")
-                    db_list                                 =   [db[0] for db in databases]
-                    
-                    if g.conf.clickhouse.database not in db_list:
-                        t.debug_print(f"⚠ База данных '{g.conf.clickhouse.database}' не существует, создаём...", self.name)
-                        # Создаём базу с движком Atomic и кодеком ZSTD для максимального сжатия
-                        create_db_query                     =   f"""
-                            CREATE DATABASE IF NOT EXISTS {g.conf.clickhouse.database}
-                            ENGINE = Atomic
-                            COMMENT 'База данных для журналов регистрации 1С с максимальным сжатием'
-                        """
-                        self.chclient.execute(create_db_query)
-                        t.debug_print(f"✓ База данных '{g.conf.clickhouse.database}' успешно создана", self.name)
-                    else:
-                        t.debug_print(f"✓ База данных '{g.conf.clickhouse.database}' существует", self.name)
-                except Exception as db_check_err:
-                    t.debug_print(f"⚠ Ошибка при работе с базой данных: {str(db_check_err)}", self.name)
-                
-                # Переподключаемся к созданной базе данных
-                self.chclient                               =   ch(
-                                                                    host=g.conf.clickhouse.host, 
-                                                                    port=g.conf.clickhouse.port, 
-                                                                    user=g.conf.clickhouse.user, 
-                                                                    password=g.conf.clickhouse.password,
-                                                                    database=g.conf.clickhouse.database
-                                                                )
-                    
-            except Exception as e:
-                t.debug_print(f"✗ ClickHouse: Ошибка подключения: {str(e)}", self.name)
-                self.chclient = None
+            self.connect_clickhouse()
         else:
             t.debug_print(f"ClickHouse отключен в конфигурации", self.name)
             self.chclient                                   =   None
 
         t.debug_print("Thread initialized", self.name)
+    # ------------------------------------------------------------------------------------------------------------------
+    # подключение к ClickHouse: проверка сервера, создание базы, клиент к базе; при неудаче chclient = None
+    # ------------------------------------------------------------------------------------------------------------------
+    def connect_clickhouse(self):
+        self.chclient                                       =   None
+        t.debug_print(f"Подключение к ClickHouse: {g.conf.clickhouse.host}:{g.conf.clickhouse.port}, БД: {g.conf.clickhouse.database}", self.name)
+        server_client                                       =   snd.connect_clickhouse(self.name)                       # без базы: её может ещё не быть
+        if server_client is None:
+            return
+        # Проверяем и создаём базу данных с максимальным сжатием
+        try:
+            databases                                       =   server_client.execute("SHOW DATABASES")
+            db_list                                         =   [db[0] for db in databases]
+            if g.conf.clickhouse.database not in db_list:
+                t.debug_print(f"⚠ База данных '{g.conf.clickhouse.database}' не существует, создаём...", self.name)
+                # Создаём базу с движком Atomic и кодеком ZSTD для максимального сжатия
+                create_db_query                             =   f"""
+                    CREATE DATABASE IF NOT EXISTS {g.conf.clickhouse.database}
+                    ENGINE = Atomic
+                    COMMENT 'База данных для журналов регистрации 1С с максимальным сжатием'
+                """
+                server_client.execute(create_db_query)
+                t.debug_print(f"✓ База данных '{g.conf.clickhouse.database}' успешно создана", self.name)
+            else:
+                t.debug_print(f"✓ База данных '{g.conf.clickhouse.database}' существует", self.name)
+        except Exception as db_check_err:
+            t.debug_print(f"⚠ Ошибка при работе с базой данных: {str(db_check_err)}", self.name)
+        server_client.disconnect()
+        # Переподключаемся к созданной базе данных
+        self.chclient                                       =   snd.connect_clickhouse(self.name, database=g.conf.clickhouse.database)
+    # ------------------------------------------------------------------------------------------------------------------
+    # True, если ClickHouse выключен или подключение есть; без подключения пробует переподключиться
+    # ------------------------------------------------------------------------------------------------------------------
+    def ensure_clickhouse(self):
+        if not g.conf.clickhouse.enabled or self.chclient:
+            return True
+        self.connect_clickhouse()
+        return self.chclient is not None
     # ------------------------------------------------------------------------------------------------------------------
     # Запуск и работа класса
     # ------------------------------------------------------------------------------------------------------------------
@@ -403,6 +396,7 @@ class parser(threading.Thread):
             del self.json_data[self.name][:]
         elif records_to_log:
             if not self.solr_post_json_data(pf_base):
+                del self.json_data[self.name][:]                                                                        # блок перечитается с закоммиченного смещения; остаток не должен уйти с пачкой другого файла или базы
                 return False
 
         if not state_manager.log_committed_block(
@@ -437,6 +431,10 @@ class parser(threading.Thread):
     # ------------------------------------------------------------------------------------------------------------------
     def parse_file(self, pf_name, pf_base):                                                                             # обработка файла
         try:
+            if not self.ensure_clickhouse():                                                                            # без ClickHouse пачку некуда отправить: не разбираем, state не двигаем
+                t.debug_print(f"ClickHouse недоступен, {pf_base} разберём позже", self.name)
+                time.sleep(g.waits.clickhouse_reconnect)
+                return
             if g.conf.clickhouse.enabled and self.chclient:
                  # Создаем таблицу для базы с оптимальным сжатием и индексацией
                  try:
