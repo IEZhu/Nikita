@@ -8,7 +8,6 @@ import os
 import shutil
 import sys
 import tempfile
-import threading
 import unittest
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
@@ -37,29 +36,20 @@ class TestIbasesLock(unittest.TestCase):
         with open(os.path.join(cluster_dir, g.conf.c1.cluster_file), "w", encoding="UTF8") as fh:
             fh.write('{%s,"plata_buh_prod","","","","","","","Srvr=localhost;Ref=plata_buh_prod"}' % BASE_ID)
 
-    def _finishes(self, target):
-        done = threading.Event()
-
-        def run():
-            target()
-            done.set()
-
-        worker = threading.Thread(target=run, daemon=True)                      # daemon: при регрессии зависший поток не держит тесты
-        worker.start()
-        return done.wait(5)
+    def _taken_again_without_waiting(self):
+        with g.ibases_lock:
+            nested = g.ibases_lock.acquire(blocking=False)                      # без ожидания: при регрессии тест падает, а не висит, держа блокировку
+            if nested:
+                g.ibases_lock.release()
+        return nested
 
     def test_lock_can_be_taken_twice_by_the_same_thread(self):
-        def nested():
-            with g.ibases_lock:
-                with g.ibases_lock:
-                    pass
-        self.assertTrue(self._finishes(nested))
+        self.assertTrue(self._taken_again_without_waiting())
 
     def test_ib_monitor_detect_under_the_lock_finishes(self):
-        def monitor_step():
-            with g.ibases_lock:                                                 # как IB monitor в Nikita.py
-                N.conf.detect2(initial2=False, d2_srvinfo=self.srvinfo)
-        self.assertTrue(self._finishes(monitor_step))
+        self.assertTrue(self._taken_again_without_waiting())                    # иначе detect2 ниже повесит весь набор
+        with g.ibases_lock:                                                     # как IB monitor в Nikita.py
+            N.conf.detect2(initial2=False, d2_srvinfo=self.srvinfo)
         self.assertEqual([ib[g.nms.ib.name] for ib in g.parser.ibases], ["PLATA_BUH_PROD"])
 
 
