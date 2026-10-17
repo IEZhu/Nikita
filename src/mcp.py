@@ -17,6 +17,8 @@
 import  json
 import  base64
 import  binascii
+import  math
+import  traceback
 # ======================================================================================================================
 from    src                 import  globals                 as  g
 from    src                 import  mcp_query               as  q
@@ -42,6 +44,7 @@ ERROR_METHOD_NOT_FOUND                                  =   -32601
 ERROR_INVALID_PARAMS                                    =   -32602
 ERROR_HEADER_MISMATCH                                   =   -32020
 ERROR_UNSUPPORTED_VERSION                               =   -32022
+ERROR_INTERNAL                                          =   -32603
 
 DEFAULT_MAX_ROWS                                        =   200
 LOGGER_NAME                                             =   "mcp"
@@ -55,7 +58,7 @@ INSTRUCTIONS                                            =   (
 # формирование HTTP-ответов
 # ======================================================================================================================
 def json_response(status: int, message: dict) -> tuple:
-    body                                                =   json.dumps(message, ensure_ascii=False, default=str).encode("utf-8")
+    body                                                =   json.dumps(message, ensure_ascii=False, default=str, allow_nan=False).encode("utf-8")
     return status, {"Content-Type": "application/json; charset=utf-8"}, body
 
 
@@ -110,6 +113,17 @@ def tool_error(text: str) -> dict:
     return {"content": [{"type": "text", "text": text}], "isError": True}
 
 
+def json_safe(value):
+    """NaN и ±Inf из ClickHouse заменяет на None: в JSON их нет; остальное оставляет для default=str."""
+    if isinstance(value, float) and not math.isfinite(value):
+        return None
+    if isinstance(value, (list, tuple)):
+        return [json_safe(item) for item in value]
+    if isinstance(value, dict):
+        return {str(key): json_safe(item) for key, item in value.items()}
+    return value
+
+
 def call_query_tool(arguments: dict) -> dict:
     sql                                                 =   arguments.get("sql")
     max_rows                                            =   arguments.get("max_rows", DEFAULT_MAX_ROWS)
@@ -124,8 +138,9 @@ def call_query_tool(arguments: dict) -> dict:
         t.debug_print(f"query failed: {str(e)[:300]} | sql: {sql[:200]}", LOGGER_NAME)
         return tool_error(str(e))
     t.debug_print(f"query ok: {result['row_count']} rows, truncated={result['truncated']}, {result['elapsed_ms']} ms | sql: {sql[:200]}", LOGGER_NAME)
-    text                                                =   json.dumps(result, ensure_ascii=False, default=str)
-    return {"content": [{"type": "text", "text": text}], "structuredContent": json.loads(text), "isError": False}
+    structured                                          =   json_safe(result)
+    text                                                =   json.dumps(structured, ensure_ascii=False, default=str, allow_nan=False)
+    return {"content": [{"type": "text", "text": text}], "structuredContent": structured, "isError": False}
 # ======================================================================================================================
 # разбор методов, общий для обеих эпох
 # ======================================================================================================================
@@ -219,7 +234,11 @@ def handle(http_method: str, headers: dict, body: bytes) -> tuple:
     params                                              =   message.get("params") or {}
     if not isinstance(params, dict):
         return error_response(400, request_id, ERROR_INVALID_PARAMS, "params must be an object")
-    meta                                                =   params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
-    if META_PROTOCOL_VERSION in meta:
-        return handle_modern(request_id, method, params, meta[META_PROTOCOL_VERSION], headers)
-    return handle_legacy(request_id, method, params, headers)
+    try:
+        meta                                            =   params.get("_meta") if isinstance(params.get("_meta"), dict) else {}
+        if META_PROTOCOL_VERSION in meta:
+            return handle_modern(request_id, method, params, meta[META_PROTOCOL_VERSION], headers)
+        return handle_legacy(request_id, method, params, headers)
+    except Exception:
+        t.debug_print(f"internal error: {traceback.format_exc()}", LOGGER_NAME)
+        return error_response(500, request_id, ERROR_INTERNAL, "Internal error")

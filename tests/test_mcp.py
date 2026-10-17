@@ -2,6 +2,7 @@ import unittest
 import unittest.mock
 import json
 import base64
+import datetime
 import sys
 import os
 
@@ -229,6 +230,64 @@ class TestModern(McpTestCase):
             _, _, payload = self.post(request, modern_headers("tools/call", name="query"))
         run_query.assert_not_called()
         self.assertTrue(payload["result"]["isError"])
+
+
+class TestRobustness(McpTestCase):
+    def call(self, arguments, name="query"):
+        request = modern_request("tools/call", {"name": name, "arguments": arguments})
+        return self.post(request, modern_headers("tools/call", name=name))
+
+    def test_non_finite_floats_become_null(self):
+        fake_result = {"columns": [], "rows": [[float("nan"), float("inf"), 1.5]], "row_count": 1,
+                       "truncated": False, "elapsed_ms": 1}
+
+        def reject(constant):
+            raise ValueError(constant)
+
+        request = modern_request("tools/call", {"name": "query", "arguments": {"sql": "SELECT 1"}})
+        with unittest.mock.patch.object(q, "run_query", return_value=fake_result):
+            status, _, body = m.handle("POST", modern_headers("tools/call", name="query"), json.dumps(request).encode("utf-8"))
+        self.assertEqual(status, 200)
+        payload = json.loads(body, parse_constant=reject)
+        self.assertEqual(payload["result"]["structuredContent"]["rows"], [[None, None, 1.5]])
+
+    def test_datetime_becomes_string(self):
+        moment = datetime.datetime(2026, 10, 17, 12, 30, 0)
+        fake_result = {"columns": [], "rows": [[moment]], "row_count": 1, "truncated": False, "elapsed_ms": 1}
+        with unittest.mock.patch.object(q, "run_query", return_value=fake_result):
+            _, _, payload = self.call({"sql": "SELECT now()"})
+        result = payload["result"]
+        self.assertEqual(result["structuredContent"]["rows"], [[str(moment)]])
+        self.assertEqual(json.loads(result["content"][0]["text"])["rows"], [[str(moment)]])
+
+    def test_unexpected_exception_is_internal_error(self):
+        with unittest.mock.patch.object(q, "run_query", side_effect=RuntimeError("secret-detail")):
+            request = modern_request("tools/call", {"name": "query", "arguments": {"sql": "SELECT 1"}})
+            status, headers, body = m.handle("POST", modern_headers("tools/call", name="query"), json.dumps(request).encode("utf-8"))
+        self.assertEqual(status, 500)
+        self.assertIn("application/json", headers["Content-Type"])
+        payload = json.loads(body)
+        self.assertEqual(payload["error"]["code"], -32603)
+        self.assertEqual(payload["error"]["message"], "Internal error")
+        self.assertNotIn(b"secret-detail", body)
+
+    def test_corrupt_base64_name_header(self):
+        request = modern_request("tools/call", {"name": "query", "arguments": {"sql": "SELECT 1"}})
+        status, _, payload = self.post(request, modern_headers("tools/call", name="=?base64?!!!?="))
+        self.assertEqual(status, 400)
+        self.assertEqual(payload["error"]["code"], -32020)
+
+    def test_arguments_not_object(self):
+        status, _, payload = self.call("SELECT 1")
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["error"]["code"], -32602)
+
+    def test_invalid_max_rows_is_tool_error(self):
+        for bad in (True, 0):
+            with self.subTest(max_rows=bad), unittest.mock.patch.object(q, "run_query") as run_query:
+                _, _, payload = self.call({"sql": "SELECT 1", "max_rows": bad})
+            run_query.assert_not_called()
+            self.assertTrue(payload["result"]["isError"])
 
 
 if __name__ == '__main__':

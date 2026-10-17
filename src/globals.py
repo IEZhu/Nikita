@@ -134,7 +134,7 @@ class conf:
         clickhouse_user                                         =   os.getenv('MCP_CLICKHOUSE_USER', '')                # отдельный пользователь readonly, без отката на CLICKHOUSE_USER
         clickhouse_password                                     =   os.getenv('MCP_CLICKHOUSE_PASSWORD', '')
         enabled                                                 =   os.getenv('MCP_ENABLED', 'False').lower() in ('true', '1', 't', 'y', 'yes') and clickhouse_user != ''
-        max_rows                                                =   int(os.getenv('MCP_MAX_ROWS', 10000))              # потолок max_rows инструмента query
+        max_rows                                                =   max(1, int(os.getenv('MCP_MAX_ROWS', 10000)))       # потолок max_rows инструмента query
         allowed_origins                                         =   [origin.strip() for origin in os.getenv('MCP_ALLOWED_ORIGINS', '').split(',') if origin.strip()]
         max_body                                                =   65536                                               # байт в теле одного запроса
 
