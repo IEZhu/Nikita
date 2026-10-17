@@ -24,6 +24,7 @@ from    datetime           import  datetime
 from    src.tools           import  tools                   as  t
 from    src                 import  globals                 as  g
 from    src                 import  reader                  as  r
+from    src                 import  mcp                     as  m
 # ======================================================================================================================
 # собственно, имплементация веб-сервера
 # ======================================================================================================================
@@ -978,6 +979,19 @@ class nikita_web(object):
         return "Hello World!"
     # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
     @cherrypy.expose
+    def mcp(self, *args, **kwargs):
+        """MCP-эндпоинт (src/mcp.py); авторизации нет — только за аутентифицирующим прокси."""
+        request_headers                                     =   {name.lower(): value for name, value in cherrypy.request.headers.items()}
+        request_body                                        =   b""
+        if cherrypy.request.method == "POST":
+            request_body                                    =   cherrypy.request.body.read(g.conf.mcp.max_body + 1)
+        status, response_headers, response_body             =   m.handle(cherrypy.request.method, request_headers, request_body)
+        cherrypy.response.status                            =   status
+        for name, value in response_headers.items():
+            cherrypy.response.headers[name]                 =   value
+        return response_body
+    # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+    @cherrypy.expose
     def debug_logs(self, filter_text=None, limit=100):
         """API endpoint для получения отладочных логов"""
         try:
@@ -1324,6 +1338,7 @@ class cherry_thread(threading.Thread):
             t.debug_print(f"✓ CherryPy запущен на http://{g.conf.http.listen_interface}:{g.conf.http.listen_port}/", self.name)
             t.debug_print(f"✓ Веб-панель мониторинга: http://{g.conf.http.listen_interface}:{g.conf.http.listen_port}/", self.name)
             t.debug_print(f"✓ JSON API статистики: http://{g.conf.http.listen_interface}:{g.conf.http.listen_port}/stats_api", self.name)
+            t.debug_print(f"✓ MCP: {'http://' + g.conf.http.listen_interface + ':' + g.conf.http.listen_port + '/mcp' if g.conf.mcp.enabled else 'выключен (MCP_ENABLED или MCP_CLICKHOUSE_USER не заданы)'}", self.name)
             
             conf                                                =   {'/': {}}
             cherrypy.quickstart(nikita_web(), config=conf)
