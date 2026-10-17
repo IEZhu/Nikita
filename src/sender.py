@@ -5,7 +5,7 @@ import  re
 import  requests
 import  datetime
 import  traceback
-from    typing              import  List, Dict, Any
+from    typing              import  List, Dict, Any, Optional
 from    clickhouse_driver   import  Client                  as  ch
 
 from    src.tools           import  tools                   as  t
@@ -145,10 +145,51 @@ def get_existing_clickhouse_keys(chclient: Any, rows: List[tuple], base_name: st
     return existing
 
 # ----------------------------------------------------------------------------------------------------------------------
+# Учёт ошибки ClickHouse в статистике панели; та же ошибка подряд не вытесняет другие из last_errors
+# ----------------------------------------------------------------------------------------------------------------------
+def note_clickhouse_error(error_msg: str) -> None:
+    now                                                     =   datetime.datetime.now()
+    g.stats.clickhouse_total_errors                         +=  1
+    g.stats.clickhouse_last_error_time                      =   now
+    g.stats.clickhouse_last_error_msg                       =   error_msg
+    g.stats.clickhouse_connection_ok                        =   False
+    if g.stats.last_errors and g.stats.last_errors[-1][1:] == ("ClickHouse", error_msg):
+        return
+    g.stats.last_errors.append((now, "ClickHouse", error_msg))
+    if len(g.stats.last_errors)                             >   10:
+        g.stats.last_errors.pop(0)
+
+# ----------------------------------------------------------------------------------------------------------------------
+# Подключение к ClickHouse, проверенное SELECT 1; None, если сервер недоступен
+# ----------------------------------------------------------------------------------------------------------------------
+def connect_clickhouse(logger_name: str, database: Optional[str] = None) -> Any:
+    params                                                  =   {
+                                                                    "host"      :   g.conf.clickhouse.host,
+                                                                    "port"      :   g.conf.clickhouse.port,
+                                                                    "user"      :   g.conf.clickhouse.user,
+                                                                    "password"  :   g.conf.clickhouse.password,
+                                                                }
+    if database:
+        params["database"]                                  =   database
+    try:
+        client                                              =   ch(**params)
+        client.execute('SELECT 1')
+    except Exception as e:
+        t.debug_print(f"✗ ClickHouse: Ошибка подключения: {str(e)}", logger_name)
+        note_clickhouse_error(f"Подключение: {str(e)}")
+        return None
+    t.debug_print(f"✓ ClickHouse: Подключение успешно установлено", logger_name)
+    return client
+
+# ----------------------------------------------------------------------------------------------------------------------
 # Отправка пакета данных в ClickHouse
 # ----------------------------------------------------------------------------------------------------------------------
 def send_to_clickhouse(chclient: Any, data: List[Dict[str, Any]], base_name: str, logger_name: str) -> bool:
     if not chclient:
+        if g.conf.clickhouse.enabled:
+            t.debug_print(f"✗ CLICKHOUSE: Нет подключения, пачка из {len(data)} записей для базы {base_name} не отправлена", logger_name)
+            g.stats.clickhouse_connection_ok                =   False
+            return False                                                                                                # без связи пачка не считается отправленной: state не двигается
         t.debug_print(f"ClickHouse не настроен, пропускаем отправку {len(data)} записей для базы {base_name}", logger_name)
         return True                                                                                                     # Если CH не настроен, считаем отправку успешной
     
@@ -483,20 +524,8 @@ class sender_thread(threading.Thread):
         self.chclient                                       =   None
         
         if g.conf.clickhouse.enabled:
-            try:
-                t.debug_print(f"Sender: Подключение к ClickHouse...", self.name)
-                self.chclient                               =   ch(
-                                                                    host        =   g.conf.clickhouse.host, 
-                                                                    port        =   g.conf.clickhouse.port, 
-                                                                    user        =   g.conf.clickhouse.user, 
-                                                                    password    =   g.conf.clickhouse.password,
-                                                                    database    =   g.conf.clickhouse.database
-                                                                )
-                self.chclient.execute('SELECT 1')
-                t.debug_print(f"✓ Sender: ClickHouse подключен", self.name)
-            except Exception as e:
-                t.debug_print(f"✗ Sender: Ошибка подключения к ClickHouse: {str(e)}", self.name)
-                self.chclient                               =   None
+            t.debug_print(f"Sender: Подключение к ClickHouse...", self.name)
+            self.chclient                                   =   connect_clickhouse(self.name, database=g.conf.clickhouse.database)
 
         t.debug_print("Thread initialized", self.name)
 
@@ -543,6 +572,8 @@ class sender_thread(threading.Thread):
                 t.debug_print(f"Got {len(data)} records for {base_name} from Redis", self.name)
 
                 solr_url                                    =   f"{g.execution.solr.url_main}/{base_name}/update?wt=json"
+                if g.conf.clickhouse.enabled and not self.chclient:                                                     # подключение могло не удаться при старте Sender
+                    self.chclient                           =   connect_clickhouse(self.name, database=g.conf.clickhouse.database)
 
                 ret_code                                    =   post_query(
                                                                     self.chclient,

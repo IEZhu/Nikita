@@ -25,6 +25,7 @@ from    src                 import  globals                 as  g
 # ======================================================================================================================
 SOCKET_TIMEOUT_SECONDS                                  =   90                                                  # больше max_execution_time профиля ClickHouse
 CONNECT_TIMEOUT_SECONDS                                 =   5
+MAX_ERROR_CHARS                                         =   2000                                                # длинные ошибки ClickHouse режем: модели нужен текст, не трасса
 # ======================================================================================================================
 class QueryError(Exception):
     """Ошибка запроса, текст которой можно отдать модели для исправления запроса."""
@@ -59,7 +60,9 @@ def run_query(sql: str, max_rows: int, client_factory=new_client) -> dict:
                 break
             rows.append(list(item))
     except ch_errors.ServerException as e:
-        raise QueryError(f"ClickHouse error {e.code}: {e.message}") from e
+        # трасса сервера не нужна модели и раскрывает внутренности сборки
+        server_message                                  =   e.message.split(". Stack trace:", 1)[0][:MAX_ERROR_CHARS]
+        raise QueryError(f"ClickHouse error {e.code}: {server_message}") from e
     except (ch_errors.Error, OSError, EOFError) as e:
         raise QueryError(f"ClickHouse недоступен: {e}") from e
     finally:

@@ -59,6 +59,19 @@ class TestRunQuery(unittest.TestCase):
         self.assertIn("readonly", str(ctx.exception))
         self.assertTrue(client.disconnected)
 
+    def test_server_error_drops_the_stack_trace(self):
+        message = "Unknown identifier 'x'. Stack trace:\n\n0. DB::Exception::Exception() @ 0x000000000c1d2e3b\n1. DB::f() @ 0x1"
+        client = FakeClient(error=ch_errors.ServerException(message, code=47))
+        with self.assertRaises(q.QueryError) as ctx:
+            q.run_query("SELECT x", 10, client_factory=lambda: client)
+        self.assertEqual(str(ctx.exception), "ClickHouse error 47: Unknown identifier 'x'")
+
+    def test_long_server_error_is_capped(self):
+        client = FakeClient(error=ch_errors.ServerException("e" * 10000, code=62))
+        with self.assertRaises(q.QueryError) as ctx:
+            q.run_query("SELECT", 10, client_factory=lambda: client)
+        self.assertLessEqual(len(str(ctx.exception)), len("ClickHouse error 62: ") + q.MAX_ERROR_CHARS)
+
     def test_network_error_becomes_query_error(self):
         client = FakeClient(error=ch_errors.NetworkError("Connection refused"))
         with self.assertRaises(q.QueryError) as ctx:
