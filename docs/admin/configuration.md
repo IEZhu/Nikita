@@ -229,7 +229,8 @@ HTTP_LISTEN_PORT=8984
 `POST /mcp` — сервер [Model Context Protocol](https://modelcontextprotocol.io/) внутри Nikita с одним
 инструментом `query`: произвольный читающий SQL к ClickHouse. Nikita сам отправляет запрос, читает результат
 потоком (не больше `max_rows` строк) и возвращает колонки и строки. Поддерживаются ревизии протокола
-`2026-07-28` и `2025-03-26`…`2025-11-25`; ответ всегда один JSON (без SSE и без сессий).
+`2026-07-28` и `2025-03-26`…`2025-11-25`; на каждый запрос с `id` — один JSON-ответ (без SSE и без сессий),
+нотификации получают `202` без тела. По умолчанию `query` возвращает 200 строк, не больше `MCP_MAX_ROWS`.
 
 ```ini
 MCP_ENABLED=true
@@ -246,7 +247,8 @@ MCP_ALLOWED_ORIGINS=
 - В Nikita нет авторизации. Публикуйте `/mcp` только за reverse proxy с аутентификацией и TLS,
   а Nikita слушайте на `HTTP_LISTEN_INTERFACE=127.0.0.1`.
 - Запрет записи обеспечивает ClickHouse, а не Nikita: пользователь `MCP_CLICKHOUSE_USER` должен
-  иметь `readonly=1` и `SELECT` только на базу журнала.
+  иметь `readonly=1` и `SELECT` только на базу журнала (`zhr1c` — значение `CLICKHOUSE_DATABASE` по умолчанию,
+  подставьте своё).
 - Ограничивайте размер тела запроса на прокси (`LimitRequestBody 65536` в примере ниже): лимит Nikita
   в 64 KiB работает только для `application/json`, тела других типов CherryPy разбирает раньше.
 - Нефинитные числа из ClickHouse (`nan`, `inf`) возвращаются как `null` — в JSON их нет.
@@ -292,7 +294,7 @@ MCP_ALLOWED_ORIGINS=
 
 ```bash
 claude mcp add --transport http nikita https://host.example/nikita/mcp \
-  --header "Authorization: Basic $(printf '%s' 'user:password' | base64)"
+  --header "Authorization: Basic $(printf '%s' "$NIKITA_MCP_USER:$NIKITA_MCP_PASSWORD" | base64 | tr -d '\n')"
 ```
 
 ---
