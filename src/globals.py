@@ -127,6 +127,17 @@ class conf:
         password                                                =   os.getenv('CLICKHOUSE_PASSWORD', '')
         database                                                =   os.getenv('CLICKHOUSE_DATABASE', 'zhr1c')
 
+    # ======= настройки MCP (эндпоинт /mcp веб-сервера) ================================================================
+    # авторизации в Nikita нет: публикуйте /mcp только за аутентифицирующим прокси и с HTTP_LISTEN_INTERFACE=127.0.0.1
+    class mcp:
+        section_name                                            =   "MCP settings"
+        clickhouse_user                                         =   os.getenv('MCP_CLICKHOUSE_USER', '')                # отдельный пользователь readonly, без отката на CLICKHOUSE_USER
+        clickhouse_password                                     =   os.getenv('MCP_CLICKHOUSE_PASSWORD', '')
+        enabled                                                 =   os.getenv('MCP_ENABLED', 'False').lower() in ('true', '1', 't', 'y', 'yes') and clickhouse_user != ''
+        max_rows                                                =   int(os.getenv('MCP_MAX_ROWS', 10000))              # потолок max_rows инструмента query
+        allowed_origins                                         =   [origin.strip() for origin in os.getenv('MCP_ALLOWED_ORIGINS', '').split(',') if origin.strip()]
+        max_body                                                =   65536                                               # байт в теле одного запроса
+
     # ======= настройки Redis ==========================================================================================
     class redis:
         section_name                                            =   "Redis settings"
